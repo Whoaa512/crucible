@@ -5,7 +5,7 @@ defmodule Crucible do
 
   alias Crucible.Loop
 
-  @spec completion(String.t(), String.t(), keyword()) :: term()
+  @spec completion(String.t(), String.t(), keyword()) :: Loop.run_result()
   def completion(question, prompt, opts \\ [])
       when is_binary(question) and is_binary(prompt) and is_list(opts) do
     Loop.run(question, prompt, opts)

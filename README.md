@@ -1,120 +1,105 @@
-# Crucible
+<p align="center">
+  <img src="assets/banner.png" alt="Crucible — Recursive LLM Code Execution for Elixir" width="700" />
+</p>
 
-Crucible is a Recursive Language Model (RLM) execution engine in Elixir. It gives an LLM a stateful REPL — the model writes Elixir code, that code gets executed, the model sees the result, and the loop continues until the model arrives at a final answer. Think of it as giving an LLM a scratchpad it can actually run.
+<p align="center">
+  <a href="https://hex.pm/packages/crucible"><img src="https://img.shields.io/hexpm/v/crucible.svg" alt="Hex.pm" /></a>
+  <a href="https://opensource.org/licenses/MIT"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License" /></a>
+</p>
 
-This is useful for tasks where a single LLM call isn't enough: multi-step reasoning, data transformation, analysis that requires iteration, or problems where the model needs to try something, observe the result, and adjust.
+---
+
+> ⚠️ **Security Warning:** Crucible executes LLM-generated code via `Code.eval_string` with no sandbox. The model can access the full Elixir standard library, file system, network, and OS commands. **Do not run Crucible with untrusted input in production environments** without additional safeguards.
+
+Crucible is a Recursive Language Model (RLM) execution engine for Elixir. It gives an LLM a stateful REPL — the model writes Elixir code, that code gets executed, the model sees the result, and the loop continues until the model arrives at a final answer.
 
 ## How it works
 
-1. You provide a **question** (what to solve) and a **prompt** (input data).
-2. The model receives metadata about the input and writes Elixir code.
-3. Crucible evaluates the code in a sandboxed REPL with persistent bindings.
-4. If the model sets `final = <answer>`, the loop returns that value.
-5. Otherwise, execution results are fed back and the model writes more code.
-6. The model can also call `rlm_call.(sub_question, sub_prompt)` to spawn recursive sub-loops.
-
-The loop runs until convergence or a configurable iteration limit (default: 20).
+1. You provide a **question** (what to solve) and **input** (data to work with)
+2. Crucible sends both to an LLM provider
+3. The model writes Elixir code, which Crucible evaluates in a stateful REPL
+4. Results feed back to the model for the next iteration
+5. The loop continues until the model sets `final = "answer"` or hits the iteration limit
 
 ## Installation
 
-Add `crucible` to your `mix.exs`:
+### As a library
+
+Add to your `mix.exs`:
 
 ```elixir
-def deps do
-  [
-    {:crucible, "~> 0.1.0"}
-  ]
-end
+{:crucible, "~> 1.0"}
 ```
 
-## Usage
+### Standalone binary (Burrito)
 
-### Basic
+Crucible uses [Burrito](https://github.com/burrito-elixir/burrito) for standalone binaries:
 
-```elixir
-Crucible.completion("How many words are in this text?", long_text)
-# => "42"
+```bash
+git clone https://github.com/Whoaa512/crucible.git
+cd crucible
+mix deps.get
+MIX_ENV=prod mix release crucible
 ```
 
-### With options
+Binaries are output to `burrito_out/` for your platform.
+
+## CLI Usage
+
+```bash
+crucible run "Summarize the key points" --input data.txt --provider openai --model gpt-4o
+crucible skills list                    # View cached skill snippets
+crucible skills clear                   # Clear skill cache
+crucible logs list                      # List trajectory logs
+crucible logs cleanup --max-age 7       # Delete logs older than 7 days
+crucible providers                      # List available providers
+crucible version                        # Print version
+crucible --help                         # Show usage
+```
+
+### Run options
+
+| Option | Description |
+|--------|-------------|
+| `--input FILE` | **Required.** Input file (or `-` for stdin) |
+| `--provider NAME` | LLM provider: `openai`, `anthropic`, `openrouter`, `codex` |
+| `--model NAME` | Model name (provider-specific) |
+| `--api-key KEY` | API key (or set via env: `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, etc.) |
+| `--max-iterations N` | Maximum REPL loop iterations (default: 10) |
+| `--temperature F` | Sampling temperature |
+| `--max-tokens N` | Max tokens per response |
+| `--skills` | Enable skill caching (retrieves similar past solutions) |
+| `--skills-db PATH` | Custom SQLite path for skill cache |
+| `--retry` | Enable retry with exponential backoff |
+| `--no-log` | Disable trajectory logging |
+| `--json` | Output result as JSON |
+| `--quiet` | Suppress iteration progress output |
+
+## Library Usage
 
 ```elixir
-Crucible.completion("Summarize this", document,
-  provider: :anthropic,
-  model: "claude-sonnet-4-20250514",
-  max_iterations: 10,
-  temperature: 0.3
+{:ok, answer, meta} = Crucible.completion(
+  "What is the average of these numbers?",
+  "4, 8, 15, 16, 23, 42",
+  provider: :openai,
+  model: "gpt-4o",
+  return_meta: true
 )
 ```
 
-### Recursive sub-calls
+## Skill Caching
 
-The model has access to `rlm_call/2` inside the REPL. It can split work:
+When `--skills` is enabled, Crucible stores successful (question, code) pairs in a SQLite database. On subsequent runs, it retrieves the top-3 most similar past solutions and injects them into the system prompt, helping the model solve similar problems faster.
 
-```elixir
-# The model might generate code like:
-chunks = String.split(input, "\n\n")
-summaries = Enum.map(chunks, fn chunk ->
-  rlm_call.("Summarize this paragraph", chunk)
-end)
-final = Enum.join(summaries, "\n")
-```
+## Providers
 
-## Provider Configuration
-
-Crucible auto-detects your provider based on available credentials, checked in this order:
-
-1. **Anthropic** — `ANTHROPIC_API_KEY` env var
-2. **Codex** — `~/.codex/auth.json` (from OpenAI Codex CLI)
-3. **OpenAI** — `OPENAI_API_KEY` env var
-4. **OpenRouter** — `OPENROUTER_API_KEY` env var
-
-Or set explicitly:
-
-```elixir
-Crucible.completion(question, prompt, provider: :openrouter)
-```
-
-You can also pass API keys directly:
-
-```elixir
-Crucible.completion(question, prompt,
-  provider: :anthropic,
-  api_key: "sk-ant-..."
-)
-```
-
-## Architecture
-
-```
-Crucible (public API)
-└── Loop (iteration engine)
-    ├── LLM (provider dispatch)
-    │   ├── Providers.Anthropic
-    │   ├── Providers.OpenAI
-    │   ├── Providers.OpenRouter
-    │   └── Providers.Codex
-    ├── Repl (stateful code evaluation)
-    └── Logger (JSONL trajectory logging)
-```
-
-- **Loop** orchestrates the generate→execute→feedback cycle.
-- **Repl** maintains variable bindings across iterations and captures stdout.
-- **LLM** routes to the configured provider with consistent options.
-- **Logger** writes JSONL trajectory files to `tmp/rlm_trajectories/` (disable with `log_trajectory: false`).
-
-## Options
-
-| Option | Default | Description |
-|--------|---------|-------------|
-| `:provider` | auto-detect | `:anthropic`, `:openai`, `:openrouter`, `:codex` |
-| `:model` | `"gpt-4o-mini"` | Model identifier |
-| `:temperature` | `0.2` | Sampling temperature |
-| `:max_tokens` | `700` | Max tokens per LLM call |
-| `:max_iterations` | `20` | Loop iteration limit |
-| `:log_trajectory` | `true` | Write JSONL logs |
-| `:task_timeout` | `60_000` | Timeout for sub-calls (ms) |
+| Provider | Env Variable | Notes |
+|----------|-------------|-------|
+| OpenAI | `OPENAI_API_KEY` | GPT-4o, GPT-4, etc. |
+| Anthropic | `ANTHROPIC_API_KEY` | Claude models |
+| OpenRouter | `OPENROUTER_API_KEY` | Multi-provider gateway |
+| Codex | `OPENAI_API_KEY` | Codex models |
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT

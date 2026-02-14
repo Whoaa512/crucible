@@ -6,4 +6,9 @@
 erl_crash.dump
 *.ez
 crucible-*.tar
+/crucible
 /tmp/
+burrito_out/
+tmp/
+..bfg-report/
+crucible-*/

@@ -69,6 +69,44 @@ defmodule Crucible.LoopTest do
     assert result == "provider-ok"
   end
 
+  test "returns error tuple on max_iterations instead of raising" do
+    enqueue([
+      fn _messages -> "x = 1" end,
+      fn _messages -> "x = 2" end
+    ])
+
+    result =
+      Loop.run("Question", "prompt",
+        llm_module: Crucible.MockLLM,
+        log_trajectory: false,
+        max_iterations: 2
+      )
+
+    assert {:error, :max_iterations, meta} = result
+    assert meta.iterations == 2
+    assert meta.trajectory == nil
+    assert %{code: "x = 2"} = meta.partial
+  end
+
+  test "retries LLM errors with exponential backoff when enabled" do
+    enqueue([
+      fn _messages -> raise "request failed with status 429: rate limited" end,
+      fn _messages -> raise "request failed with status 502: bad gateway" end,
+      fn _messages -> "final = \"ok\"" end
+    ])
+
+    result =
+      Loop.run("Question", "prompt",
+        llm_module: Crucible.MockLLM,
+        log_trajectory: false,
+        retry_with_backoff: true,
+        llm_retries: 3,
+        llm_retry_backoff_ms: 0
+      )
+
+    assert result == "ok"
+  end
+
   defp enqueue(functions) do
     pid = Application.fetch_env!(:crucible, :mock_llm_agent)
     Agent.update(pid, fn _ -> functions end)
@@ -79,18 +117,19 @@ defmodule Crucible.MockLLM do
   def complete(messages, opts) do
     pid = Application.fetch_env!(:crucible, :mock_llm_agent)
 
-    Agent.get_and_update(pid, fn
-      [next | rest] ->
-        result =
-          case :erlang.fun_info(next, :arity) do
-            {:arity, 2} -> next.(messages, opts)
-            _ -> next.(messages)
-          end
+    next =
+      Agent.get_and_update(pid, fn
+        [next | rest] -> {next, rest}
+        [] -> {nil, []}
+      end)
 
-        {result, rest}
+    if is_nil(next) do
+      raise "Mock queue exhausted"
+    end
 
-      [] ->
-        raise "Mock queue exhausted"
-    end)
+    case :erlang.fun_info(next, :arity) do
+      {:arity, 2} -> next.(messages, opts)
+      _ -> next.(messages)
+    end
   end
 end

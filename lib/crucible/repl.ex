@@ -18,11 +18,17 @@ defmodule Crucible.Repl do
     binding = state_to_binding(state)
 
     {:ok, io} = StringIO.open("")
+    {:ok, io_err} = StringIO.open("")
     previous_stdio = Process.get(:stdio)
     previous_group_leader = Process.group_leader()
+    previous_stderr = :erlang.whereis(:standard_error)
 
     Process.put(:stdio, io)
     Process.group_leader(self(), io)
+
+    # Redirect :standard_error to suppress compile warnings/errors to terminal
+    if previous_stderr, do: :erlang.unregister(:standard_error)
+    :erlang.register(:standard_error, io_err)
 
     {result, next_state} =
       try do
@@ -37,6 +43,10 @@ defmodule Crucible.Repl do
       after
         Process.group_leader(self(), previous_group_leader)
 
+        # Restore :standard_error
+        :erlang.unregister(:standard_error)
+        if previous_stderr, do: :erlang.register(:standard_error, previous_stderr)
+
         if previous_stdio do
           Process.put(:stdio, previous_stdio)
         else
@@ -45,7 +55,11 @@ defmodule Crucible.Repl do
       end
 
     {_input, output} = StringIO.contents(io)
-    {result, output, next_state}
+    {_input, stderr_output} = StringIO.contents(io_err)
+
+    # Append any captured stderr to stdout output so error info isn't lost
+    combined_output = if stderr_output == "", do: output, else: output <> stderr_output
+    {result, combined_output, next_state}
   end
 
   @spec get_var(state(), atom() | String.t()) :: term()
@@ -53,7 +67,7 @@ defmodule Crucible.Repl do
     Map.get(state, key, Map.get(state, normalize_key(key)))
   end
 
-  def get_var(state, key) when is_map(state), do: Map.get(state, key)
+  def get_var(state, key) when is_map(state) and is_atom(key), do: Map.get(state, key)
 
   @spec set_var(state(), atom() | String.t(), term()) :: state()
   def set_var(state, key, value) when is_map(state), do: Map.put(state, normalize_key(key), value)

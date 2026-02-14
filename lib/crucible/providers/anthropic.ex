@@ -12,8 +12,9 @@ defmodule Crucible.Providers.Anthropic do
 
   @spec complete([message()], keyword()) :: String.t()
   def complete(messages, opts \\ []) when is_list(messages) do
-    api_key = Keyword.get(opts, :api_key) || System.get_env("ANTHROPIC_API_KEY") ||
-      raise "No Anthropic API key found. Set ANTHROPIC_API_KEY or pass :api_key option."
+    api_key =
+      Keyword.get(opts, :api_key) || System.get_env("ANTHROPIC_API_KEY") ||
+        raise "No Anthropic API key found. Set ANTHROPIC_API_KEY or pass :api_key option."
 
     {system_messages, conversation_messages} = split_system_messages(messages)
 
